@@ -2,20 +2,18 @@
 # ============================================================
 # Trajectron++ 部署脚本 (car-road 数据集)
 #
-# 在服务器上一键部署 Trajectron++ 并准备 car-road 数据管线
-#
 # 用法:
-#   # 1. 先 cd 到你想要部署的目录
 #   cd /mnt/zyc_wzh
-#
-#   # 2. 运行此脚本 (需要先把这个脚本拷贝过去, 或者直接按下面步骤手动执行)
 #   bash deploy.sh
+#
+# 或者按脚本内的步骤手动逐步执行
 # ============================================================
 
 set -e
 
 DEPLOY_DIR="/mnt/zyc_wzh"
-CONDA_ENV="da3"  # 你已有的 conda 环境
+CONDA_ENV="trajectronpp"
+PYTHON_VER="3.9"
 
 echo "========================================="
 echo " Trajectron++ 部署 (car-road 数据集)"
@@ -23,7 +21,7 @@ echo "========================================="
 
 # ----- Step 1: 克隆仓库 -----
 echo ""
-echo "[Step 1/4] 克隆仓库..."
+echo "[Step 1/5] 克隆仓库..."
 cd "${DEPLOY_DIR}"
 
 if [ -d "Trajectron-plus-plus" ]; then
@@ -38,35 +36,57 @@ else
     git checkout claude/reproduce-car-road-dataset-EJALZ
 fi
 
-# ----- Step 2: 安装依赖 -----
+# ----- Step 2: 创建 conda 环境 -----
 echo ""
-echo "[Step 2/4] 安装 Python 依赖..."
-echo "  当前 conda 环境: ${CONDA_ENV}"
-echo ""
-echo "  请确保你已激活 conda 环境: conda activate ${CONDA_ENV}"
-echo "  以下依赖将通过 pip 安装:"
-echo ""
+echo "[Step 2/5] 创建 conda 环境: ${CONDA_ENV} (Python ${PYTHON_VER})..."
 
-pip install dill tqdm pandas numpy scipy scikit-learn \
-    tensorboardX pyquaternion orjson ncls opencv-python
+# 检查环境是否已存在
+if conda env list | grep -q "${CONDA_ENV}"; then
+    echo "  环境 ${CONDA_ENV} 已存在, 跳过创建"
+else
+    conda create -n "${CONDA_ENV}" python="${PYTHON_VER}" -y
+fi
 
-# PyTorch: 如果你的环境已经有 PyTorch 就跳过
-python -c "import torch; print(f'  PyTorch 已安装: {torch.__version__}, CUDA: {torch.cuda.is_available()}')" 2>/dev/null || {
-    echo "  警告: 未检测到 PyTorch, 请手动安装适合你 CUDA 版本的 PyTorch"
-    echo "  例如: pip install torch torchvision --index-url https://download.pytorch.org/whl/cu118"
-}
+# 激活环境
+eval "$(conda shell.bash hook)"
+conda activate "${CONDA_ENV}"
+echo "  当前 Python: $(python --version)"
+echo "  当前环境: ${CONDA_ENV}"
 
-# ----- Step 3: 创建输出目录 -----
+# ----- Step 3: 安装依赖 -----
 echo ""
-echo "[Step 3/4] 创建输出目录..."
+echo "[Step 3/5] 安装 PyTorch (CUDA 12.1)..."
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
+
+echo ""
+echo "[Step 3/5] 安装其他 Python 依赖..."
+pip install \
+    dill==0.3.7 \
+    tqdm \
+    pandas \
+    numpy \
+    scipy \
+    scikit-learn \
+    matplotlib \
+    seaborn \
+    tensorboardX \
+    pyquaternion \
+    orjson \
+    ncls \
+    opencv-python \
+    notebook
+
+# ----- Step 4: 创建输出目录 -----
+echo ""
+echo "[Step 4/5] 创建输出目录..."
+cd "${DEPLOY_DIR}/Trajectron-plus-plus"
 mkdir -p experiments/processed
 mkdir -p experiments/car_road/logs
 mkdir -p experiments/car_road/results
 
-# ----- Step 4: 验证 -----
+# ----- Step 5: 验证 -----
 echo ""
-echo "[Step 4/4] 验证安装..."
-cd "${DEPLOY_DIR}/Trajectron-plus-plus"
+echo "[Step 5/5] 验证安装..."
 python -c "
 import sys
 sys.path.append('trajectron')
@@ -75,11 +95,13 @@ import dill
 import torch
 import numpy as np
 import pandas as pd
-print('  ✓ 所有核心依赖导入成功')
-print(f'  ✓ PyTorch: {torch.__version__}')
-print(f'  ✓ CUDA 可用: {torch.cuda.is_available()}')
+print('  所有核心依赖导入成功')
+print(f'  PyTorch: {torch.__version__}')
+print(f'  CUDA 可用: {torch.cuda.is_available()}')
 if torch.cuda.is_available():
-    print(f'  ✓ GPU: {torch.cuda.get_device_name(0)}')
+    print(f'  GPU: {torch.cuda.get_device_name(0)}')
+else:
+    print('  警告: CUDA 不可用, 请检查 PyTorch 安装')
 "
 
 echo ""
@@ -87,7 +109,10 @@ echo "========================================="
 echo " 部署完成!"
 echo "========================================="
 echo ""
-echo " 接下来的步骤:"
+echo " 后续使用时先激活环境:"
+echo "    conda activate ${CONDA_ENV}"
+echo ""
+echo " 然后按顺序执行:"
 echo ""
 echo " 1. 数据预处理:"
 echo "    cd ${DEPLOY_DIR}/Trajectron-plus-plus/experiments/car_road"
