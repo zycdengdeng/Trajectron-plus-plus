@@ -1,6 +1,5 @@
 import torch
 from torch import nn, optim, utils
-from torch.amp import autocast
 import numpy as np
 import os
 import time
@@ -255,8 +254,6 @@ def main():
     #################################
     #           TRAINING            #
     #################################
-    use_amp = args.device != torch.device('cpu')
-
     curr_iter_node_type = {node_type: 0 for node_type in train_data_loader.keys()}
     for epoch in range(1, args.train_epochs + 1):
         model_registrar.to(args.device)
@@ -268,13 +265,9 @@ def main():
                 trajectron.set_curr_iter(curr_iter)
                 trajectron.step_annealers(node_type)
                 optimizer[node_type].zero_grad(set_to_none=True)
-
-                with autocast('cuda', enabled=use_amp, dtype=torch.bfloat16):
-                    train_loss = trajectron.train_loss(batch, node_type)
-
+                train_loss = trajectron.train_loss(batch, node_type)
                 pbar.set_description(f"Epoch {epoch}, {node_type} L: {train_loss.item():.2f}")
                 train_loss.backward()
-
                 # Clipping gradients.
                 if hyperparams['grad_clip'] is not None:
                     nn.utils.clip_grad_value_(model_registrar.parameters(), hyperparams['grad_clip'])
