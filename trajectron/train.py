@@ -137,7 +137,7 @@ def main():
 
         node_type_dataloader = utils.data.DataLoader(node_type_data_set,
                                                      collate_fn=collate,
-                                                     pin_memory=False if args.device is 'cpu' else True,
+                                                     pin_memory=False if args.device == 'cpu' else True,
                                                      batch_size=args.batch_size,
                                                      shuffle=True,
                                                      num_workers=args.preprocess_workers)
@@ -180,7 +180,7 @@ def main():
 
             node_type_dataloader = utils.data.DataLoader(node_type_data_set,
                                                          collate_fn=collate,
-                                                         pin_memory=False if args.eval_device is 'cpu' else True,
+                                                         pin_memory=False if args.eval_device == 'cpu' else True,
                                                          batch_size=args.eval_batch_size,
                                                          shuffle=True,
                                                          num_workers=args.preprocess_workers)
