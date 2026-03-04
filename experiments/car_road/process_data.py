@@ -37,9 +37,12 @@ VEHICLE_LABELS = {
     'Engineering_vehicle', 'engineering_vehicle',
     'Fire_engine', 'fire_engine',
     'Trailer', 'trailer',
+    'Vehicle_else', 'vehicle_else',
+    'Huge_vehicle', 'huge_vehicle',
 }
 PEDESTRIAN_LABELS = {
     'Pedestrian', 'pedestrian',
+    'Pedestrian_else', 'pedestrian_else',
     'Person', 'person',
 }
 CYCLIST_LABELS = {
@@ -47,6 +50,9 @@ CYCLIST_LABELS = {
     'Bicycle', 'bicycle',
     'Motorcycle', 'motorcycle',
     'Tricycle', 'tricycle',
+    'Non_motor_rider', 'non_motor_rider',
+    'Motor_rider', 'motor_rider',
+    'Other_rider', 'other_rider',
 }
 
 # ---------- data columns (matching nuScenes format) ----------
