@@ -1,5 +1,6 @@
 import torch
 from torch import nn, optim, utils
+from torch.cuda.amp import autocast, GradScaler
 import numpy as np
 import os
 import time
@@ -19,6 +20,9 @@ from model.model_utils import cyclical_lr
 from model.dataset import EnvironmentDataset, collate
 from tensorboardX import SummaryWriter
 # torch.autograd.set_detect_anomaly(True)
+
+# Optimize CUDA performance
+torch.backends.cudnn.benchmark = True
 
 if not torch.cuda.is_available() or args.device == 'cpu':
     args.device = torch.device('cpu')
@@ -135,12 +139,17 @@ def main():
         if len(node_type_data_set) == 0:
             continue
 
-        node_type_dataloader = utils.data.DataLoader(node_type_data_set,
-                                                     collate_fn=collate,
-                                                     pin_memory=False if args.device == 'cpu' else True,
-                                                     batch_size=args.batch_size,
-                                                     shuffle=True,
-                                                     num_workers=args.preprocess_workers)
+        dl_kwargs = dict(
+            collate_fn=collate,
+            pin_memory=False if args.device == 'cpu' else True,
+            batch_size=args.batch_size,
+            shuffle=True,
+            num_workers=args.preprocess_workers,
+        )
+        if args.preprocess_workers > 0:
+            dl_kwargs['persistent_workers'] = True
+            dl_kwargs['prefetch_factor'] = 4
+        node_type_dataloader = utils.data.DataLoader(node_type_data_set, **dl_kwargs)
         train_data_loader[node_type_data_set.node_type] = node_type_dataloader
 
     print(f"Loaded training data from {train_data_path}")
@@ -178,12 +187,17 @@ def main():
             if len(node_type_data_set) == 0:
                 continue
 
-            node_type_dataloader = utils.data.DataLoader(node_type_data_set,
-                                                         collate_fn=collate,
-                                                         pin_memory=False if args.eval_device == 'cpu' else True,
-                                                         batch_size=args.eval_batch_size,
-                                                         shuffle=True,
-                                                         num_workers=args.preprocess_workers)
+            eval_dl_kwargs = dict(
+                collate_fn=collate,
+                pin_memory=False if args.eval_device == 'cpu' else True,
+                batch_size=args.eval_batch_size,
+                shuffle=True,
+                num_workers=args.preprocess_workers,
+            )
+            if args.preprocess_workers > 0:
+                eval_dl_kwargs['persistent_workers'] = True
+                eval_dl_kwargs['prefetch_factor'] = 4
+            node_type_dataloader = utils.data.DataLoader(node_type_data_set, **eval_dl_kwargs)
             eval_data_loader[node_type_data_set.node_type] = node_type_dataloader
 
         print(f"Loaded evaluation data from {eval_data_path}")
@@ -241,6 +255,9 @@ def main():
     #################################
     #           TRAINING            #
     #################################
+    use_amp = args.device != torch.device('cpu')
+    scaler = GradScaler(enabled=use_amp)
+
     curr_iter_node_type = {node_type: 0 for node_type in train_data_loader.keys()}
     for epoch in range(1, args.train_epochs + 1):
         model_registrar.to(args.device)
@@ -251,14 +268,21 @@ def main():
             for batch in pbar:
                 trajectron.set_curr_iter(curr_iter)
                 trajectron.step_annealers(node_type)
-                optimizer[node_type].zero_grad()
-                train_loss = trajectron.train_loss(batch, node_type)
+                optimizer[node_type].zero_grad(set_to_none=True)
+
+                with autocast(enabled=use_amp):
+                    train_loss = trajectron.train_loss(batch, node_type)
+
                 pbar.set_description(f"Epoch {epoch}, {node_type} L: {train_loss.item():.2f}")
-                train_loss.backward()
+                scaler.scale(train_loss).backward()
+
                 # Clipping gradients.
                 if hyperparams['grad_clip'] is not None:
+                    scaler.unscale_(optimizer[node_type])
                     nn.utils.clip_grad_value_(model_registrar.parameters(), hyperparams['grad_clip'])
-                optimizer[node_type].step()
+
+                scaler.step(optimizer[node_type])
+                scaler.update()
 
                 # Stepping forward the learning rate scheduler and annealers.
                 lr_scheduler[node_type].step()
