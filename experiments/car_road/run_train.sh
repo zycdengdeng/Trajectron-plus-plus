@@ -16,7 +16,8 @@ python train.py \
     --log_dir ../experiments/car_road/logs \
     --log_tag "_car_road" \
     --train_epochs 100 \
-    --batch_size 256 \
+    --batch_size 4096 \
+    --preprocess_workers 8 \
     --eval_every 10 \
     --save_every 10 \
     --device cuda:0 \
