@@ -88,8 +88,8 @@ standardization = {
     },
     'VEHICLE': {
         'position': {
-            'x': {'mean': 0, 'std': 80},
-            'y': {'mean': 0, 'std': 80}
+            'x': {'mean': 0, 'std': 120},
+            'y': {'mean': 0, 'std': 60}
         },
         'velocity': {
             'x': {'mean': 0, 'std': 15},
@@ -420,6 +420,15 @@ def process_scene(scene_dir, env, label_type='interpolation',
         ax = derivative_of(vx, dt)
         ay = derivative_of(vy, dt)
 
+        # Clip extreme velocity/acceleration caused by tracking ID switches
+        # or annotation jumps. Limits: 30 m/s ≈ 108 km/h, 8 m/s² ≈ 0.8g
+        max_vel = 30.0 if node_type_str == 'VEHICLE' else 10.0
+        max_acc = 8.0 if node_type_str == 'VEHICLE' else 5.0
+        vx = np.clip(vx, -max_vel, max_vel)
+        vy = np.clip(vy, -max_vel, max_vel)
+        ax = np.clip(ax, -max_acc, max_acc)
+        ay = np.clip(ay, -max_acc, max_acc)
+
         if node_type_str == 'VEHICLE':
             v = np.stack((vx, vy), axis=-1)
             v_norm = np.linalg.norm(v, axis=-1, keepdims=True)
@@ -427,6 +436,9 @@ def process_scene(scene_dir, env, label_type='interpolation',
                                   where=(v_norm > 1.))
             heading_x = heading_v[:, 0]
             heading_y = heading_v[:, 1]
+
+            d_heading = derivative_of(heading, dt, radian=True)
+            d_heading = np.clip(d_heading, -np.pi, np.pi)
 
             data_dict = {
                 ('position', 'x'): x,
@@ -441,7 +453,7 @@ def process_scene(scene_dir, env, label_type='interpolation',
                 ('heading', 'x'): heading_x,
                 ('heading', 'y'): heading_y,
                 ('heading', '°'): heading,
-                ('heading', 'd°'): derivative_of(heading, dt, radian=True)
+                ('heading', 'd°'): d_heading
             }
             node_data = pd.DataFrame(data_dict,
                                      columns=data_columns_vehicle)
