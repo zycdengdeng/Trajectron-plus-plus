@@ -32,20 +32,21 @@ for split in ['train', 'val', 'test']:
         for node in scene.nodes:
             nt = str(node.type)
             total_nodes[nt] = total_nodes.get(nt, 0) + 1
-            track_lengths.append(len(node.data))
+            track_lengths.append(node.data.data.shape[0])
 
-            x = node.data.position.x.values
-            y = node.data.position.y.values
-            pos_x_all.extend(x.tolist())
-            pos_y_all.extend(y.tolist())
+            # DoubleHeaderNumpyArray: node.data[:, ('position', 'x')] returns np array
+            x = node.data[:, ('position', 'x')]
+            y = node.data[:, ('position', 'y')]
+            pos_x_all.extend(x.flatten().tolist())
+            pos_y_all.extend(y.flatten().tolist())
 
-            vx = node.data.velocity.x.values
-            vy = node.data.velocity.y.values
-            vel_all.extend(np.sqrt(vx**2 + vy**2).tolist())
+            vx = node.data[:, ('velocity', 'x')]
+            vy = node.data[:, ('velocity', 'y')]
+            vel_all.extend(np.sqrt(vx.flatten()**2 + vy.flatten()**2).tolist())
 
-            ax = node.data.acceleration.x.values
-            ay = node.data.acceleration.y.values
-            acc_all.extend(np.sqrt(ax**2 + ay**2).tolist())
+            ax = node.data[:, ('acceleration', 'x')]
+            ay = node.data[:, ('acceleration', 'y')]
+            acc_all.extend(np.sqrt(ax.flatten()**2 + ay.flatten()**2).tolist())
 
     for nt, cnt in sorted(total_nodes.items()):
         print(f"  {nt}: {cnt} nodes")
