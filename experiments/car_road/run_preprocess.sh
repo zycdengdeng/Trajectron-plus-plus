@@ -15,7 +15,7 @@
 #                     路侧 LiDAR 约 7-8Hz, 可以设 0.5 与 nuScenes 对齐
 #   --min_track_length 最少连续帧数(低于此值的轨迹会被过滤)
 
-DATA_ROOT="/mnt/car_road_data_fix"
+DATA_ROOT="/mnt/car_road_data_TianJin"
 OUTPUT_DIR="../processed"
 
 python process_data.py \
