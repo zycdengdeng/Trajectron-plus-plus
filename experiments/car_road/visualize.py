@@ -6,9 +6,18 @@ import matplotlib.pyplot as plt
 
 sys.path.append('../../trajectron')
 
+
+class Python2Unpickler(pickle.Unpickler):
+    """Handle pickle files created with Python 2."""
+    def find_class(self, module, name):
+        if module == '__builtin__':
+            module = 'builtins'
+        return super().find_class(module, name)
+
+
 # Load test data
 with open('../processed/car_road_test_full.pkl', 'rb') as f:
-    env = pickle.load(f)
+    env = Python2Unpickler(f).load()
 
 os.makedirs('results', exist_ok=True)
 
