@@ -74,8 +74,8 @@ data_columns_pedestrian = pd.MultiIndex.from_product(
 standardization = {
     'PEDESTRIAN': {
         'position': {
-            'x': {'mean': 0, 'std': 1},
-            'y': {'mean': 0, 'std': 1}
+            'x': {'mean': 0, 'std': 80},
+            'y': {'mean': 0, 'std': 40}
         },
         'velocity': {
             'x': {'mean': 0, 'std': 2},
@@ -420,14 +420,18 @@ def process_scene(scene_dir, env, label_type='interpolation',
         ax = derivative_of(vx, dt)
         ay = derivative_of(vy, dt)
 
-        # Clip extreme velocity/acceleration caused by tracking ID switches
-        # or annotation jumps. Limits: 30 m/s ≈ 108 km/h, 8 m/s² ≈ 0.8g
+        # Clip extreme velocity/acceleration by norm (not per-component)
+        # to avoid sqrt(2) factor on diagonal. Limits: 30 m/s, 8 m/s²
         max_vel = 30.0 if node_type_str == 'VEHICLE' else 10.0
         max_acc = 8.0 if node_type_str == 'VEHICLE' else 5.0
-        vx = np.clip(vx, -max_vel, max_vel)
-        vy = np.clip(vy, -max_vel, max_vel)
-        ax = np.clip(ax, -max_acc, max_acc)
-        ay = np.clip(ay, -max_acc, max_acc)
+        v_norm = np.sqrt(vx**2 + vy**2)
+        v_scale = np.where(v_norm > max_vel, max_vel / np.maximum(v_norm, 1e-8), 1.0)
+        vx = vx * v_scale
+        vy = vy * v_scale
+        a_norm = np.sqrt(ax**2 + ay**2)
+        a_scale = np.where(a_norm > max_acc, max_acc / np.maximum(a_norm, 1e-8), 1.0)
+        ax = ax * a_scale
+        ay = ay * a_scale
 
         if node_type_str == 'VEHICLE':
             v = np.stack((vx, vy), axis=-1)

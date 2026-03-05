@@ -15,7 +15,7 @@ python train.py \
     --eval_data_dict car_road_val_full.pkl \
     --log_dir ../experiments/car_road/logs \
     --log_tag "_car_road" \
-    --train_epochs 20 \
+    --train_epochs 100 \
     --batch_size 4096 \
     --preprocess_workers 16 \
     --eval_every 10 \
