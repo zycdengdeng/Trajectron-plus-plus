@@ -74,36 +74,28 @@ def analyze_velocity_distribution(scenes, ph=6):
     slow_count = 0        # speed < 1.0 m/s
 
     for scene in scenes:
-        timesteps = np.arange(scene.timesteps)
         for node in scene.nodes:
             if node.type.name != 'VEHICLE':
                 continue
 
-            # 对每个时间步，检查是否有足够的 future
-            for t in timesteps:
-                # 检查该节点在 t 时刻是否存在
-                if t < node.first_timestep or t >= node.last_timestep:
-                    continue
-                # 检查是否有足够 future 时间步
-                future_end = t + ph
-                if future_end > node.last_timestep:
-                    continue
+            # 获取整条轨迹的速度
+            try:
+                vx = node.data[:, ('velocity', 'x')].flatten()
+                vy = node.data[:, ('velocity', 'y')].flatten()
+            except:
+                continue
 
+            track_len = node.data.data.shape[0]
+
+            # 对每个可预测时间步
+            for local_t in range(track_len - ph):
                 sample_count += 1
-
-                # 获取该时刻的速度
-                try:
-                    state = node.get(t, {'velocity': ['x', 'y']})
-                    if state is not None and len(state) > 0:
-                        vx, vy = state[0]
-                        speed = np.sqrt(vx**2 + vy**2)
-                        speeds.append(speed)
-                        if speed < 0.5:
-                            stationary_count += 1
-                        if speed < 1.0:
-                            slow_count += 1
-                except:
-                    pass
+                speed = np.sqrt(vx[local_t]**2 + vy[local_t]**2)
+                speeds.append(speed)
+                if speed < 0.5:
+                    stationary_count += 1
+                if speed < 1.0:
+                    slow_count += 1
 
     speeds = np.array(speeds)
     print(f"  可预测样本总数: {sample_count}")
