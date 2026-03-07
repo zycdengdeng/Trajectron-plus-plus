@@ -22,6 +22,7 @@ import dill
 import json
 import argparse
 import numpy as np
+import pandas as pd
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
@@ -315,8 +316,6 @@ if __name__ == "__main__":
 
     # 只选运动样本 (speed >= 1.0)
     moving = cases_df[cases_df['speed'] >= 1.0]
-
-    import pandas as pd
 
     categories = {}
 
