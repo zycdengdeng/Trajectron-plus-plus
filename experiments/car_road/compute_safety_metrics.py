@@ -4,16 +4,10 @@
 基于预测轨迹和真值轨迹，计算所有交互对之间的 TTC 和 PET 安全指标。
 
 用法:
-    # 使用模型预测轨迹计算
     python compute_safety_metrics.py \
         --data ../processed/car_road_test_full.pkl \
         --model logs/models_05_Mar_2026_16_25_06_car_road \
         --checkpoint 80 \
-        --output_path results
-
-    # 仅基于真值轨迹计算
-    python compute_safety_metrics.py \
-        --data ../processed/car_road_test_full.pkl \
         --output_path results
 """
 import sys
@@ -303,7 +297,9 @@ if __name__ == "__main__":
                     if gt_min_dist > 20.0:
                         continue
 
-                    pair_type = f"{node_a.type.name}-{node_b.type.name}"
+                    # 统一交互对类型顺序 (按字母序)
+                    types = sorted([node_a.type.name, node_b.type.name])
+                    pair_type = f"{types[0]}-{types[1]}"
 
                     results.append({
                         'scene': scene.name,
@@ -344,8 +340,17 @@ if __name__ == "__main__":
     print(f"  总交互对数: {len(df)}")
     print(f"  存在碰撞风险 (TTC < ∞): {len(finite_ttc)} ({100*len(finite_ttc)/len(df):.1f}%)")
     if len(finite_ttc) > 0:
-        print(f"  TTC (真值) - mean: {finite_ttc.mean():.2f}s, "
+        ttc_zero = (finite_ttc == 0).sum()
+        ttc_nonzero = finite_ttc[finite_ttc > 0]
+        print(f"  TTC (全部) - mean: {finite_ttc.mean():.2f}s, "
               f"median: {finite_ttc.median():.2f}s, min: {finite_ttc.min():.2f}s")
+        print(f"  TTC = 0 (观测时刻已在碰撞半径内): {ttc_zero} 对 "
+              f"({100*ttc_zero/len(finite_ttc):.1f}% of 碰撞风险)")
+        print(f"    → 通常为路口/停车场中静止或低速跟车场景")
+        if len(ttc_nonzero) > 0:
+            print(f"  TTC > 0 (真正趋近碰撞): {len(ttc_nonzero)} 对")
+            print(f"    mean: {ttc_nonzero.mean():.2f}s, "
+                  f"median: {ttc_nonzero.median():.2f}s")
 
     for threshold in [1.0, 2.0, 3.0]:
         n = (finite_ttc < threshold).sum()
