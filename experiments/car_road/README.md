@@ -336,10 +336,61 @@ vy = vy * v_scale
 - Full 模式采样了完整后验分布 (包括低概率模态)，而 ML 只取最高概率的预测
 - 两者差距不大，说明模型的概率分布集中度良好
 
-**仍需关注**:
-- 训练尚未完成 (80/100 epoch)，最终 epoch 100 的结果可能进一步改善
-- PEDESTRIAN 的评估结果待确认 (loss 是否已收敛)
-- 缺少详细的误差分布 (ADE/FDE 分位数)，需要后续补充
+### 8.4 PEDESTRIAN 评估结果 (test set, ph=6, checkpoint=80)
+
+**样本数**: 5827 (包含行人、骑行者、电动车等非机动车目标)
+
+> **注**: PEDESTRIAN 类别包含三类原始标注:
+> - **纯行人**: Pedestrian, Person, Pedestrian_else
+> - **骑行者/非机动车**: Cyclist, Bicycle, Motorcycle, Tricycle, Non_motor_rider, Motor_rider, Other_rider
+>
+> 骑行者和非机动车 (如电瓶车) 被合并到 PEDESTRIAN，因为其运动模式 (无明确航向角) 更适合 SingleIntegrator 动力学模型。这也解释了速度段中 5-15 m/s 区间有大量样本——这些主要是电瓶车和摩托车。
+
+| 模式 | ADE (m) | FDE (m) | KDE NLL |
+|------|---------|---------|---------|
+| **GMM Z Mode (Most Likely)** | **0.649** | **1.237** | - |
+| **Full (2000 samples)** | 0.810 | 1.541 | **1.308** |
+
+**按速度段统计 (Most Likely Z)**:
+
+| 速度段 | 样本数 | ADE mean | ADE median | FDE mean | FDE median |
+|--------|--------|----------|------------|----------|------------|
+| 静止 (<0.5 m/s) | 1588 | 0.185 | 0.029 | 0.316 | 0.041 |
+| 低速 (0.5-2 m/s) | 554 | 0.571 | 0.327 | 1.155 | 0.638 |
+| 中速 (2-5 m/s) | 1103 | 0.731 | 0.509 | 1.484 | 0.980 |
+| 正常 (5-15 m/s) | 2582 | 0.917 | 0.658 | 1.715 | 1.191 |
+| 运动 (>=1.0) 合计 | 4041 | 0.830 | 0.588 | 1.591 | 1.095 |
+
+### 8.5 PEDESTRIAN 结果分析
+
+**修复效果验证**:
+- 第一轮训练 PEDESTRIAN loss ≈ 10，模型完全不可用
+- 修复 standardization 后，PEDESTRIAN 模型成功收敛，**ML ADE = 0.649m，ML FDE = 1.237m**
+
+**PEDESTRIAN vs VEHICLE 对比**:
+
+| 指标 | VEHICLE | PEDESTRIAN | 说明 |
+|------|---------|------------|------|
+| ML ADE | 0.619 m | 0.649 m | 接近，PEDESTRIAN 略高 |
+| ML FDE | 1.300 m | 1.237 m | PEDESTRIAN 反而略优 |
+| KDE NLL | -1.429 | 1.308 | PEDESTRIAN 概率建模质量较低 |
+
+- PEDESTRIAN 的 KDE NLL (1.308) 明显高于 VEHICLE (-1.429)，说明 PEDESTRIAN 的概率分布建模不如 VEHICLE 准确。这可能是因为 PEDESTRIAN 类别混合了步行者和非机动车两种截然不同的运动模式，单一的 SingleIntegrator 动力学模型难以同时精确建模两者的概率分布
+
+### 8.6 综合评估
+
+| 指标 | VEHICLE (Epoch 20) | VEHICLE (Epoch 80) | PEDESTRIAN (Epoch 80) |
+|------|--------------------|--------------------|----------------------|
+| ML ADE | 1.084 m | **0.619 m** | **0.649 m** |
+| ML FDE | 2.020 m | **1.300 m** | **1.237 m** |
+| KDE NLL | 1.685 | **-1.429** | 1.308 |
+| 状态 | 基本可用 | 显著改善 | **从不可用到可用** |
+
+**结论**:
+1. 三项修复 (standardization + norm clipping + 训练 epoch) 效果显著
+2. VEHICLE ADE 降低 43%，PEDESTRIAN 从完全不收敛到 ADE=0.649m
+3. 对于路侧感知场景下 3 秒 (6 步) 轨迹预测，两类目标的 ADE 均在 0.6-0.7m 范围，属于可用水平
+4. 训练尚未完成 (80/100 epoch)，最终 checkpoint 100 可能进一步改善
 
 ---
 
@@ -366,7 +417,7 @@ vy = vy * v_scale
 | 03-05 06:07 | 04bfba9 | 重写可视化脚本 |
 | 03-05 06:25 | 456027a | 整理结果文件到 results/ 目录 |
 | **03-05 08:08** | **7e88fde** | **修复 PEDESTRIAN 不收敛: standardization + norm clipping + epoch 100** |
-| **03-07** | - | **第二轮评估: Epoch 80 VEHICLE ADE 0.619m (-43%)** |
+| **03-07** | - | **第二轮评估: VEHICLE ADE 0.619m (-43%), PEDESTRIAN ADE 0.649m (从不可用到可用)** |
 
 ---
 
@@ -382,6 +433,9 @@ vy = vy * v_scale
 | `validate_data.py` | 数据质量验证 |
 | `visualize.py` | 轨迹可视化 |
 | `deploy.sh` | 远程服务器环境部署 |
+| `run_eval_pedestrian.sh` | PEDESTRIAN 评估启动脚本 |
+| `diagnose_testset.py` | 测试集分析诊断 |
+| `check_velocity.py` | 速度分布分析 |
 | `config/car_road.json` | 模型超参数配置 |
 | `results/*.csv` | 评估结果 |
 
@@ -402,7 +456,9 @@ vy = vy * v_scale
 
 ## 附录 B: 评估结果汇总
 
-| 轮次 | Checkpoint | 修复项 | ML ADE | ML FDE | KDE NLL |
-|------|-----------|--------|--------|--------|---------|
-| 第一轮 | Epoch 20 | 无 | 1.084 | 2.020 | 1.685 |
-| 第二轮 | Epoch 80 | std + clipping + epoch | **0.619** | **1.300** | **-1.429** |
+| 轮次 | 节点类型 | Checkpoint | 修复项 | ML ADE | ML FDE | KDE NLL | 状态 |
+|------|---------|-----------|--------|--------|--------|---------|------|
+| 第一轮 | VEHICLE | Epoch 20 | 无 | 1.084 | 2.020 | 1.685 | 基本可用 |
+| 第一轮 | PEDESTRIAN | Epoch 20 | 无 | - | - | - | **不收敛 (loss≈10)** |
+| 第二轮 | VEHICLE | Epoch 80 | std + clipping + epoch | **0.619** | **1.300** | **-1.429** | 显著改善 |
+| 第二轮 | PEDESTRIAN | Epoch 80 | std + clipping + epoch | **0.649** | **1.237** | **1.308** | **从不可用到可用** |
