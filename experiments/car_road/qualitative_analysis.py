@@ -13,8 +13,10 @@
         --model logs/models_05_Mar_2026_16_25_06_car_road \
         --checkpoint 80 \
         --output_path results/qualitative \
-        --node_type VEHICLE \
         --num_cases 5
+
+    # 仅分析单一类型
+    python qualitative_analysis.py ... --node_type VEHICLE
 """
 import sys
 import os
@@ -36,7 +38,8 @@ parser.add_argument("--data", type=str, default="../processed/car_road_test_full
 parser.add_argument("--model", type=str, default=None)
 parser.add_argument("--checkpoint", type=int, default=80)
 parser.add_argument("--ph", type=int, default=6)
-parser.add_argument("--node_type", type=str, default="VEHICLE")
+parser.add_argument("--node_type", type=str, nargs='+', default=["VEHICLE", "PEDESTRIAN"],
+                    help="要分析的节点类型, 默认同时分析 VEHICLE 和 PEDESTRIAN")
 parser.add_argument("--num_cases", type=int, default=5,
                     help="每类 case 选取数量")
 parser.add_argument("--num_samples", type=int, default=20)
@@ -217,10 +220,11 @@ if __name__ == "__main__":
     ph = args.ph
     max_hl = hyperparams['maximum_history_length']
     dt = env.scenes[0].dt
+    node_types = args.node_type  # list of node type strings
 
-    # ── 第一阶段: 收集所有预测样本的指标 ──
-    print("\n第一阶段: 收集所有预测样本的 ADE/FDE ...")
-    all_cases = []
+    # ── 预计算场景图 & 预测 (对所有类型共用) ──
+    print(f"\n预测阶段: 对 {len(env.scenes)} 个场景进行推理 ...")
+    all_predictions = {}  # {scene_idx: predictions_dict}
 
     for si, scene in enumerate(env.scenes):
         scene.calculate_scene_graph(env.attention_radius,
@@ -234,210 +238,237 @@ if __name__ == "__main__":
                                            min_future_timesteps=ph,
                                            z_mode=False, gmm_mode=False,
                                            full_dist=False)
+        if predictions:
+            all_predictions[si] = predictions
 
-        if not predictions:
+    # ── 按 node_type 分别分析 ──
+    for node_type in node_types:
+        print(f"\n{'=' * 70}")
+        print(f"分析 {node_type}")
+        print(f"{'=' * 70}")
+
+        type_output = os.path.join(args.output_path, node_type)
+        os.makedirs(type_output, exist_ok=True)
+
+        # ── 第一阶段: 收集样本 ──
+        print(f"\n第一阶段: 收集 {node_type} 预测样本的 ADE/FDE ...")
+        all_cases = []
+
+        for si, scene in enumerate(env.scenes):
+            if si not in all_predictions:
+                continue
+            predictions = all_predictions[si]
+
+            for t in predictions.keys():
+                for node in predictions[t].keys():
+                    if node.type.name != node_type:
+                        continue
+
+                    pred = predictions[t][node][0]  # [num_samples, ph, 2]
+
+                    # 获取真值
+                    t_start = node.first_timestep
+                    local_t = t - t_start
+                    xy = node.data.data[:, 0:2]
+
+                    if local_t + ph >= xy.shape[0]:
+                        continue
+
+                    gt_future = xy[local_t + 1: local_t + ph + 1]
+                    if len(gt_future) < ph:
+                        continue
+
+                    # 历史轨迹
+                    hist_start = max(0, local_t - max_hl)
+                    history = xy[hist_start:local_t + 1]
+                    current_pos = xy[local_t]
+
+                    # ADE / FDE
+                    ade, fde = compute_sample_metrics(gt_future, pred, dt)
+
+                    # 速度
+                    vx = float(node.data[:, ('velocity', 'x')].flatten()[local_t])
+                    vy = float(node.data[:, ('velocity', 'y')].flatten()[local_t])
+                    speed = np.sqrt(vx**2 + vy**2)
+
+                    # 场景分类
+                    scenario = classify_scenario(history, gt_future, speed)
+
+                    # heading (VEHICLE only)
+                    heading = None
+                    if node.type.name == 'VEHICLE':
+                        heading_data = node.data[:, ('heading', '°')]
+                        heading = float(heading_data.flatten()[local_t])
+
+                    all_cases.append({
+                        'scene_idx': si,
+                        'scene_name': scene.name,
+                        'timestep': t,
+                        'node': node,
+                        'node_id': str(node),
+                        'node_type': node_type,
+                        'ade': ade,
+                        'fde': fde,
+                        'speed': speed,
+                        'scenario': scenario,
+                        'curvature': compute_curvature(gt_future),
+                        'history': history,
+                        'gt_future': gt_future,
+                        'current_pos': current_pos,
+                        'pred_trajs': pred,
+                        'heading': heading,
+                        'length': node.length,
+                        'width': node.width,
+                    })
+
+        print(f"  共收集 {len(all_cases)} 个 {node_type} 预测样本")
+
+        if len(all_cases) == 0:
+            print(f"  {node_type} 无有效样本，跳过")
             continue
 
-        for t in predictions.keys():
-            for node in predictions[t].keys():
-                if node.type.name != args.node_type:
-                    continue
+        # ── 第二阶段: 筛选代表性 case ──
+        print(f"\n第二阶段: 筛选 {node_type} 代表性 case ...")
 
-                pred = predictions[t][node][0]  # [num_samples, ph, 2]
+        cases_df = pd.DataFrame([{
+            'idx': i, 'ade': c['ade'], 'fde': c['fde'],
+            'speed': c['speed'], 'scenario': c['scenario'],
+            'curvature': c['curvature'], 'node_id': c['node_id']
+        } for i, c in enumerate(all_cases)])
 
-                # 获取真值
-                t_start = node.first_timestep
-                local_t = t - t_start
-                xy = node.data.data[:, 0:2]
+        # 运动阈值: VEHICLE >= 1.0 m/s, PEDESTRIAN >= 0.3 m/s
+        speed_thresh = 1.0 if node_type == 'VEHICLE' else 0.3
+        moving = cases_df[cases_df['speed'] >= speed_thresh]
 
-                if local_t + ph >= xy.shape[0]:
-                    continue
-
-                gt_future = xy[local_t + 1: local_t + ph + 1]
-                if len(gt_future) < ph:
-                    continue
-
-                # 历史轨迹
-                hist_start = max(0, local_t - max_hl)
-                history = xy[hist_start:local_t + 1]
-                current_pos = xy[local_t]
-
-                # ADE / FDE
-                ade, fde = compute_sample_metrics(gt_future, pred, dt)
-
-                # 速度
-                vx = float(node.data[:, ('velocity', 'x')].flatten()[local_t])
-                vy = float(node.data[:, ('velocity', 'y')].flatten()[local_t])
-                speed = np.sqrt(vx**2 + vy**2)
-
-                # 场景分类
-                scenario = classify_scenario(history, gt_future, speed)
-
-                # heading (VEHICLE only)
-                heading = None
-                if node.type.name == 'VEHICLE':
-                    heading_data = node.data[:, ('heading', '°')]
-                    heading = float(heading_data.flatten()[local_t])
-
-                all_cases.append({
-                    'scene_idx': si,
-                    'scene_name': scene.name,
-                    'timestep': t,
-                    'node': node,
-                    'node_id': str(node),
-                    'ade': ade,
-                    'fde': fde,
-                    'speed': speed,
-                    'scenario': scenario,
-                    'curvature': compute_curvature(gt_future),
-                    'history': history,
-                    'gt_future': gt_future,
-                    'current_pos': current_pos,
-                    'pred_trajs': pred,
-                    'heading': heading,
-                    'length': node.length,
-                    'width': node.width,
-                })
-
-    print(f"  共收集 {len(all_cases)} 个预测样本")
-
-    if len(all_cases) == 0:
-        print("无有效样本")
-        sys.exit(0)
-
-    # ── 第二阶段: 筛选代表性 case ──
-    print("\n第二阶段: 筛选代表性 case ...")
-
-    cases_df = pd.DataFrame([{
-        'idx': i, 'ade': c['ade'], 'fde': c['fde'],
-        'speed': c['speed'], 'scenario': c['scenario'],
-        'curvature': c['curvature'], 'node_id': c['node_id']
-    } for i, c in enumerate(all_cases)])
-
-    # 只选运动样本 (speed >= 1.0)
-    moving = cases_df[cases_df['speed'] >= 1.0]
-
-    categories = {}
-
-    # Best cases (最低 ADE)
-    best = moving.nsmallest(args.num_cases, 'ade')
-    categories['best'] = best['idx'].tolist()
-
-    # Worst cases (最高 ADE)
-    worst = moving.nlargest(args.num_cases, 'ade')
-    categories['worst'] = worst['idx'].tolist()
-
-    # Turning cases (高曲率)
-    turning = moving[moving['scenario'] == 'turning']
-    if len(turning) >= args.num_cases:
-        # 选 ADE 最中间的几个
-        turning_sorted = turning.sort_values('ade')
-        mid = len(turning_sorted) // 2
-        start = max(0, mid - args.num_cases // 2)
-        categories['turning'] = turning_sorted.iloc[start:start + args.num_cases]['idx'].tolist()
-    elif len(turning) > 0:
-        categories['turning'] = turning['idx'].tolist()
-
-    # High speed cases
-    fast = moving[moving['speed'] >= 15.0]
-    if len(fast) >= args.num_cases:
-        fast_sorted = fast.sort_values('ade')
-        mid = len(fast_sorted) // 2
-        start = max(0, mid - args.num_cases // 2)
-        categories['high_speed'] = fast_sorted.iloc[start:start + args.num_cases]['idx'].tolist()
-    elif len(fast) > 0:
-        categories['high_speed'] = fast['idx'].tolist()
-
-    # Median cases (中位数附近)
-    median_ade = moving['ade'].median()
-    near_median = moving.iloc[(moving['ade'] - median_ade).abs().argsort()[:args.num_cases]]
-    categories['median'] = near_median['idx'].tolist()
-
-    # ── 第三阶段: 绘制每类 case 的图 ──
-    print("\n第三阶段: 绘制定性分析图 ...")
-
-    # 汇总统计
-    print(f"\n场景分类统计:")
-    for scenario, grp in cases_df.groupby('scenario'):
-        print(f"  {scenario}: {len(grp)} 个样本, ADE mean={grp['ade'].mean():.3f}")
-
-    for cat_name, indices in categories.items():
-        n = len(indices)
-        if n == 0:
+        if len(moving) == 0:
+            print(f"  {node_type} 无运动样本 (speed >= {speed_thresh})，跳过")
             continue
 
-        cols = min(n, 3)
-        rows = (n + cols - 1) // cols
-        fig, axes = plt.subplots(rows, cols, figsize=(7 * cols, 7 * rows))
-        if rows == 1 and cols == 1:
-            axes = np.array([axes])
-        axes = np.array(axes).flatten()
+        categories = {}
+        cat_labels = {}
 
-        for k, idx in enumerate(indices):
-            case = all_cases[idx]
-            ax = axes[k]
+        # Best cases (最低 ADE)
+        best = moving.nsmallest(args.num_cases, 'ade')
+        categories['best'] = best['idx'].tolist()
+        cat_labels['best'] = 'Best Cases (低 ADE)'
 
-            title = (f"{case['node_id']} @ {case['scene_name']} t={case['timestep']}")
+        # Worst cases (最高 ADE)
+        worst = moving.nlargest(args.num_cases, 'ade')
+        categories['worst'] = worst['idx'].tolist()
+        cat_labels['worst'] = 'Worst Cases (高 ADE)'
 
-            draw_case(ax, case['history'], case['gt_future'],
-                      case['pred_trajs'], case['current_pos'],
-                      args.node_type, heading=case['heading'],
-                      length=case['length'], width=case['width'],
-                      ade=case['ade'], fde=case['fde'],
-                      speed=case['speed'], scenario=case['scenario'],
-                      title=title)
+        # Turning cases (高曲率)
+        turning = moving[moving['scenario'] == 'turning']
+        if len(turning) >= args.num_cases:
+            turning_sorted = turning.sort_values('ade')
+            mid = len(turning_sorted) // 2
+            start = max(0, mid - args.num_cases // 2)
+            categories['turning'] = turning_sorted.iloc[start:start + args.num_cases]['idx'].tolist()
+        elif len(turning) > 0:
+            categories['turning'] = turning['idx'].tolist()
+        cat_labels['turning'] = 'Turning Cases (转弯/变向)'
 
-        # 隐藏多余子图
-        for k in range(n, len(axes)):
-            axes[k].set_visible(False)
+        # 速度筛选 (VEHICLE: >15 m/s; PEDESTRIAN: >3 m/s 快步/跑步)
+        if node_type == 'VEHICLE':
+            fast_thresh = 15.0
+            cat_labels['high_speed'] = 'High Speed Cases (>15 m/s)'
+        else:
+            fast_thresh = 3.0
+            cat_labels['high_speed'] = 'Fast Walking/Running (>3 m/s)'
 
-        # 图例
-        legend_elements = [
-            Line2D([0], [0], color='#1565C0', linewidth=2, label='History'),
-            Line2D([0], [0], color='#F44336', linewidth=2, linestyle='--',
-                   label='Ground truth'),
-            Line2D([0], [0], color='#4CAF50', linewidth=2, alpha=0.5,
-                   label='Predictions'),
-            Line2D([0], [0], color='#2E7D32', linewidth=2,
-                   label='Best prediction'),
-        ]
+        fast = moving[moving['speed'] >= fast_thresh]
+        if len(fast) >= args.num_cases:
+            fast_sorted = fast.sort_values('ade')
+            mid = len(fast_sorted) // 2
+            start = max(0, mid - args.num_cases // 2)
+            categories['high_speed'] = fast_sorted.iloc[start:start + args.num_cases]['idx'].tolist()
+        elif len(fast) > 0:
+            categories['high_speed'] = fast['idx'].tolist()
 
-        cat_labels = {
-            'best': 'Best Cases (低 ADE)',
-            'worst': 'Worst Cases (高 ADE)',
-            'turning': 'Turning Cases (转弯场景)',
-            'high_speed': 'High Speed Cases (>15 m/s)',
-            'median': 'Median Cases (中位数 ADE)',
-        }
+        # Median cases (中位数附近)
+        median_ade = moving['ade'].median()
+        near_median = moving.iloc[(moving['ade'] - median_ade).abs().argsort()[:args.num_cases]]
+        categories['median'] = near_median['idx'].tolist()
+        cat_labels['median'] = 'Median Cases (中位数 ADE)'
 
-        fig.suptitle(f'{args.node_type} 定性分析: {cat_labels.get(cat_name, cat_name)}',
-                     fontsize=14, fontweight='bold', y=1.02)
+        # PEDESTRIAN-specific: 群体/密集场景
+        if node_type == 'PEDESTRIAN':
+            stationary = cases_df[cases_df['scenario'] == 'stationary']
+            if len(stationary) >= args.num_cases:
+                stat_sorted = stationary.sort_values('ade', ascending=False)
+                categories['stationary'] = stat_sorted.head(args.num_cases)['idx'].tolist()
+            elif len(stationary) > 0:
+                categories['stationary'] = stationary['idx'].tolist()
+            cat_labels['stationary'] = 'Stationary Cases (静止行人)'
 
-        out_file = os.path.join(args.output_path,
-                                f'qualitative_{args.node_type}_{cat_name}.png')
-        plt.savefig(out_file, dpi=150, bbox_inches='tight', facecolor='white')
-        plt.close(fig)
-        print(f"  Saved: {out_file} ({n} cases)")
+        # ── 第三阶段: 绘制图 ──
+        print(f"\n第三阶段: 绘制 {node_type} 定性分析图 ...")
 
-    # ── 第四阶段: 汇总报告 ──
-    print("\n" + "=" * 70)
-    print(f"定性分析汇总 ({args.node_type})")
-    print("=" * 70)
+        # 汇总统计
+        print(f"\n场景分类统计 ({node_type}):")
+        for scenario, grp in cases_df.groupby('scenario'):
+            print(f"  {scenario}: {len(grp)} 个样本, ADE mean={grp['ade'].mean():.3f}")
 
-    for cat_name, indices in categories.items():
-        if not indices:
-            continue
-        cat_cases = [all_cases[i] for i in indices]
-        ades = [c['ade'] for c in cat_cases]
-        fdes = [c['fde'] for c in cat_cases]
-        speeds = [c['speed'] for c in cat_cases]
-        scenarios = [c['scenario'] for c in cat_cases]
+        for cat_name, indices in categories.items():
+            n = len(indices)
+            if n == 0:
+                continue
 
-        print(f"\n{cat_labels.get(cat_name, cat_name)}:")
-        print(f"  ADE:   {np.mean(ades):.3f} ± {np.std(ades):.3f}m "
-              f"(range: {np.min(ades):.3f} ~ {np.max(ades):.3f})")
-        print(f"  FDE:   {np.mean(fdes):.3f} ± {np.std(fdes):.3f}m")
-        print(f"  Speed: {np.mean(speeds):.1f} ± {np.std(speeds):.1f} m/s")
-        print(f"  Scenarios: {', '.join(scenarios)}")
+            cols = min(n, 3)
+            rows = (n + cols - 1) // cols
+            fig, axes = plt.subplots(rows, cols, figsize=(7 * cols, 7 * rows))
+            if rows == 1 and cols == 1:
+                axes = np.array([axes])
+            axes = np.array(axes).flatten()
 
-    print(f"\n完成! 图片保存在 {args.output_path}/")
+            for k, idx in enumerate(indices):
+                case = all_cases[idx]
+                ax = axes[k]
+
+                title = (f"{case['node_id']} @ {case['scene_name']} t={case['timestep']}")
+
+                draw_case(ax, case['history'], case['gt_future'],
+                          case['pred_trajs'], case['current_pos'],
+                          node_type, heading=case['heading'],
+                          length=case['length'], width=case['width'],
+                          ade=case['ade'], fde=case['fde'],
+                          speed=case['speed'], scenario=case['scenario'],
+                          title=title)
+
+            # 隐藏多余子图
+            for k in range(n, len(axes)):
+                axes[k].set_visible(False)
+
+            fig.suptitle(f'{node_type} 定性分析: {cat_labels.get(cat_name, cat_name)}',
+                         fontsize=14, fontweight='bold', y=1.02)
+
+            out_file = os.path.join(type_output,
+                                    f'qualitative_{node_type}_{cat_name}.png')
+            plt.savefig(out_file, dpi=150, bbox_inches='tight', facecolor='white')
+            plt.close(fig)
+            print(f"  Saved: {out_file} ({n} cases)")
+
+        # ── 第四阶段: 汇总报告 ──
+        print("\n" + "=" * 70)
+        print(f"定性分析汇总 ({node_type})")
+        print("=" * 70)
+
+        for cat_name, indices in categories.items():
+            if not indices:
+                continue
+            cat_cases = [all_cases[i] for i in indices]
+            ades = [c['ade'] for c in cat_cases]
+            fdes = [c['fde'] for c in cat_cases]
+            speeds = [c['speed'] for c in cat_cases]
+            scenarios = [c['scenario'] for c in cat_cases]
+
+            print(f"\n{cat_labels.get(cat_name, cat_name)}:")
+            print(f"  ADE:   {np.mean(ades):.3f} ± {np.std(ades):.3f}m "
+                  f"(range: {np.min(ades):.3f} ~ {np.max(ades):.3f})")
+            print(f"  FDE:   {np.mean(fdes):.3f} ± {np.std(fdes):.3f}m")
+            print(f"  Speed: {np.mean(speeds):.1f} ± {np.std(speeds):.1f} m/s")
+            print(f"  Scenarios: {', '.join(scenarios)}")
+
+        print(f"\n{node_type} 完成! 图片保存在 {type_output}/")
+
+    print(f"\n全部完成!")
