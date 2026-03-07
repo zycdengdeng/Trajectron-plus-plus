@@ -436,6 +436,9 @@ vy = vy * v_scale
 | `run_eval_pedestrian.sh` | PEDESTRIAN 评估启动脚本 |
 | `diagnose_testset.py` | 测试集分析诊断 |
 | `check_velocity.py` | 速度分布分析 |
+| `compute_safety_metrics.py` | TTC/PET 安全指标计算 |
+| `bev_visualize.py` | BEV 鸟瞰图可视化 |
+| `qualitative_analysis.py` | 定性分析 (good/bad/turning case) |
 | `config/car_road.json` | 模型超参数配置 |
 | `results/*.csv` | 评估结果 |
 
